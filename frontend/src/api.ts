@@ -76,6 +76,7 @@ export interface TurnResult {
 }
 
 type TurnUpdate =
+  | { type: "preview"; text: string }
   | { type: "step"; step: TraceStep }
   | { type: "reply"; turn: TurnResult }
   | { type: "explanation"; delta: string };
@@ -141,9 +142,26 @@ async function streamMessage(
   content: string,
   onUpdate: (event: TurnUpdate) => void,
 ): Promise<TurnResult> {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let displayed = "";
+  const showReply = async (text: string) => {
+    if (text === displayed) return;
+    if (!text.startsWith(displayed)) displayed = "";
+    const chars = Array.from(text.slice(displayed.length));
+    const size = reducedMotion ? Math.max(1, chars.length) : Math.max(12, Math.ceil(chars.length / 20));
+    for (let i = 0; i < chars.length; i += size) {
+      displayed += chars.slice(i, i + size).join("");
+      onUpdate({ type: "preview", text: displayed });
+      if (i + size < chars.length) await new Promise(resolve => setTimeout(resolve, 24));
+    }
+  };
+  const showFinalReply = async (turn: TurnResult) => {
+    if (turn.status !== "failed") await showReply(turn.reply);
+    return turn;
+  };
   const response = await request("POST", `/sessions/${sid}/messages`, { content }, "application/x-ndjson");
   if (response.headers.get("content-type")?.startsWith("application/json")) {
-    return response.json() as Promise<TurnResult>;
+    return showFinalReply(await response.json());
   }
   if (!response.body) throw new Error("The server returned no reply stream.");
 
@@ -154,15 +172,27 @@ async function streamMessage(
       const { done, value } = await reader.read();
       if (done) break;
       buffer += value;
+      let preview: string | undefined;
       for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         if (!line) continue;
         const event: TurnStreamEvent = JSON.parse(line);
-        if (event.type === "result") return event.turn;
+        if (event.type === "preview") {
+          preview = event.text;
+          continue;
+        }
+        if (preview !== undefined) {
+          await showReply(preview);
+          preview = undefined;
+        }
+        if (event.type === "result") return showFinalReply(event.turn);
         if (event.type === "error") throw new Error(event.message);
+        if (event.type === "step" && !event.step.ok) displayed = "";
+        if (event.type === "reply") await showReply(event.turn.reply);
         onUpdate(event);
       }
+      if (preview !== undefined) await showReply(preview);
     }
     throw new Error("The reply stream ended before the result arrived.");
   } finally {

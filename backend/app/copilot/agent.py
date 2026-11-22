@@ -120,11 +120,19 @@ class Agent:
         outcome: ToolOutcome | None = None
         tool_choice = self.settings.llm_tool_choice or None
         max_steps = self.settings.agent_max_iterations
+        stream_tools = getattr(self.llm, "stream_tools", None)
+
+        def publish_reply(text: str) -> None:
+            if on_update:
+                on_update({"type": "preview", "text": text})
 
         for step in range(1, max_steps + 1):
             t0 = time.perf_counter()
             try:
-                resp = self.llm.chat(messages, tools=TOOL_SCHEMAS, tool_choice=tool_choice)
+                if on_update and stream_tools:
+                    resp = stream_tools(messages, TOOL_SCHEMAS, tool_choice, publish_reply)
+                else:
+                    resp = self.llm.chat(messages, tools=TOOL_SCHEMAS, tool_choice=tool_choice)
             except LLMError as e:
                 ms = int((time.perf_counter() - t0) * 1000)
                 log.event("llm_call", step=step, ok=False, error=str(e), duration_ms=ms)

@@ -30,6 +30,7 @@ export default function App() {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [lastTurn, setLastTurn] = useState<TurnResult | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
+  const [preview, setPreview] = useState("");
   const [creatingSession, setCreatingSession] = useState(false);
   const [input, setInput] = useState("");
   const [tab, setTab] = useState<"explain" | "sim" | "json">("explain");
@@ -58,8 +59,8 @@ export default function App() {
     void newSession();
   }, []);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [items, progress]);
+    endRef.current?.scrollIntoView({ behavior: "instant" });
+  }, [items, progress, preview]);
 
   const showTurn = (turn: TurnResult) => {
     setFlow(turn.flow);
@@ -76,12 +77,16 @@ export default function App() {
     let replyReceived = false;
     try {
       const result = await api.streamMessage(sessionId, text, (event) => {
-        if (event.type === "step") {
+        if (event.type === "preview") {
+          setPreview(event.text);
+        } else if (event.type === "step") {
+          if (!event.step.ok) setPreview("");
           setProgress(event.step.ok
             ? TOOL_PROGRESS[event.step.tool ?? ""] ?? "Working on your request…"
             : "Reviewing issues…");
         } else if (event.type === "reply") {
           replyReceived = true;
+          setPreview("");
           setItems((x) => [...x, { role: "assistant", turn: event.turn }]);
           showTurn(event.turn);
           setProgress("Writing the explanation…");
@@ -103,6 +108,7 @@ export default function App() {
       setItems((x) => [...x, { role: "error", text: (e as Error).message }]);
     } finally {
       setProgress(null);
+      setPreview("");
     }
   };
 
@@ -137,7 +143,8 @@ export default function App() {
                 ))}
               </div>
             )}
-            {progress && <div className="msg msg-assistant muted" role="status">{progress}</div>}
+            {preview ? <div className="msg msg-assistant pre">{preview}</div> :
+              progress && <div className="msg msg-assistant muted" role="status">{progress}</div>}
             <div ref={endRef} />
           </div>
           <form className="row" onSubmit={(e) => { e.preventDefault(); send(input); }}>
