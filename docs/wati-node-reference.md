@@ -1,116 +1,107 @@
-# Wati Chatbot 节点参考
+# Wati Chatbot node reference
 
-> 本文档整理题目要求与 Wati 官方节点说明，作为本项目 Flow 数据模型的词汇依据。
-> 只记录来源中明确出现的内容；来源未说明的细节统一放在「待设计决定」，由设计文档决定，不在此臆造。
+This reference brings together the take-home exercise requirements and Wati's official node descriptions. It provides the terminology for the project's Flow data model. Section 8 lists the details that the design document needs to define.
 
-## 来源
+## Sources
 
-| # | 来源 | 内容 |
+| ID | Source | Coverage |
 |---|---|---|
-| S1 | 题目 PDF：*Automation Builder Copilot – Take-home exercise* | 指定节点词汇与输出要求 |
-| S2 | Wati 帮助文章 [Understanding nodes in Chatbot Builder](https://support.wati.io/en/articles/11463029-understanding-nodes-in-chatbot-builder)（PDF 中 "Wati chatbot node reference" 链接） | 节点概念、启动、连接、分组、AI 节点 |
+| S1 | *Automation Builder Copilot – Take-home exercise* (PDF) | Required node vocabulary and output requirements |
+| S2 | [Understanding nodes in Chatbot Builder](https://support.wati.io/en/articles/11463029-understanding-nodes-in-chatbot-builder), linked as "Wati chatbot node reference" in the exercise | Node concepts, triggers, connections, categories, and AI nodes |
 
 ---
 
-## 1. 题目对节点的要求（S1）
-
-原文：
+## 1. Node requirements (S1)
 
 > Use Wati's chatbot node vocabulary as your model: send message, ask question, condition, API call, assign to team, wait, and similar nodes. The output should feel recognizable to a Wati user.
 
-要点：
+- Use Wati's terminology and cover Send Message, Ask Question, Condition, API Call, Assign to Team, and Wait.
+- The exercise also allows similar nodes.
+- The output should be recognizable to Wati users.
+- Intent parsing should capture the **trigger, conditions, actions, and timing**.
 
-- 节点命名沿用 Wati 词汇，**必须覆盖**：send message、ask question、condition、API call、assign to team、wait。
-- 可以加入"similar nodes"，但不是必须。
-- 输出要让 Wati 用户一眼认得出来。
-- 意图解析需要覆盖四类信息：**trigger、conditions、actions、timing**。
+## 2. Basic concepts (S2)
 
-## 2. 基本概念（S2）
-
-| 概念 | 官方说明 |
+| Concept | Description |
 |---|---|
-| Node（节点） | chatbot 工作流中的单个步骤。节点可以发送回复、提问、触发动作、路由会话、定义对话逻辑 |
-| Chatbot | 由多个相互连接的节点组成，引导对话并决定机器人的回复 |
-| 启动（Trigger） | 由**关键词或某个动作**触发 chatbot |
-| Starting node | 触发后从第一个节点（起始节点）开始执行，再根据用户回答沿流程推进 |
-| 连接（Arrows） | 节点之间用箭头连接，箭头决定：对话方向、下一步、在节点间流转的条件 |
-| 分支 | 可以继续挂接节点，按不同回复或条件分叉。官方示例：用户选 **Yes** 进入下一节点，选 **No** 则结束对话 |
+| Node | A single step in a chatbot workflow. A node can send a reply, ask a question, trigger an action, route a conversation, or define conversation logic. |
+| Chatbot | A set of connected nodes that guide the conversation and determine how the bot responds. |
+| Trigger | A **keyword or action** that starts the chatbot. |
+| Starting node | The first node to run after the trigger fires. The flow then proceeds according to the user's answers. |
+| Arrows | Connections between nodes that determine the conversation direction, the next step, and the conditions for moving between nodes. |
+| Branching | Additional nodes can create separate paths for different replies or conditions. In Wati's example, **Yes** leads to the next node and **No** ends the conversation. |
 
-由此得到的结构约束：
+These concepts inform the structure of a flow.
 
-1. 一个 flow 有**一个触发条件**和**一个起始节点**。
-2. flow 是**有向图**，节点是步骤，边（箭头）表示流转，边上可以带条件（例如对应哪个回复）。
-3. 流程可以在某个节点**结束**。
+1. A flow has **one trigger** and **one starting node**.
+2. A flow is a **directed graph**. Nodes are steps, and edges represent transitions that can depend on conditions such as the user's reply.
+3. A flow can **end** at a node.
 
-## 3. 核心节点（题目点名的 6 种）
+## 3. Six required nodes
 
-| 题目用词 (S1) | 作用 | 出口 / 分支 | 依据 |
+| Exercise term (S1) | Purpose | Outputs or branches | Basis |
 |---|---|---|---|
-| **Send Message** | 向用户发送一条消息 | 单一出口，进入下一节点 | S1；S2「节点可以发送回复」 |
-| **Ask Question** | 向用户提问并等待回复 | 按用户回复分支（如 Yes / No 各走一条路） | S1；S2「提问」及 Yes/No 示例 |
-| **Condition** | 根据条件决定走哪条路 | 多条分支，按条件成立与否流转 | S1；S2「定义对话逻辑、按条件分叉」 |
-| **API Call** | 调用外部系统 | 来源未说明 | S1；S2「触发动作」、Integrations 分组 |
-| **Assign to Team** | 把会话转给指定团队（如题目示例 "route buyers to sales"） | 来源未说明 | S1；S2「路由会话」 |
-| **Wait** | 在流程中等待一段时间，对应意图中的 timing | 等待结束后进入下一节点 | S1；S2 相关文章 *Time Delay Node* |
+| **Send Message** | Send a message to the user | One output leading to the next node | S1 and S2's description of nodes that send replies |
+| **Ask Question** | Ask the user a question and wait for a reply | Branch by reply, such as separate Yes and No paths | S1 and S2's description of questions and its Yes/No example |
+| **Condition** | Choose a path based on a condition | Multiple branches based on whether a condition is met | S1 and S2's descriptions of conversation logic and conditional branching |
+| **API Call** | Call an external system | Unspecified | S1 and S2's descriptions of actions and the Integrations category |
+| **Assign to Team** | Route a conversation to a specific team, as in the exercise example "route buyers to sales" | Unspecified | S1 and S2's description of conversation routing |
+| **Wait** | Pause the flow for a specified time to implement the timing requirement | Continue to the next node after the delay | S1 and the *Time Delay Node* article related to S2 |
 
-## 4. 节点分组与套餐（S2）
+## 4. Node categories and plans (S2)
 
-| 套餐 | 可用节点 |
+| Plan | Available nodes |
 |---|---|
-| Growth | 基础功能：发送消息、提问、设置条件，适合简单流程 |
-| Pro / Business | 在基础功能上增加 **Operations**、**Integrations**、**Catalog** |
+| Growth | Basic messaging, questions, and conditions for simple flows |
+| Pro / Business | Basic nodes plus **Operations**, **Integrations**, and **Catalog** |
 
-与核心节点的对应关系（按名称推断）：Send Message、Ask Question、Condition 属于基础功能；Assign to Team 属于 Operations；API Call 属于 Integrations。
+Based on the node names, Send Message, Ask Question, and Condition map to basic features. Assign to Team maps to Operations, and API Call maps to Integrations.
 
-## 5. AI 节点（S2，本项目不实现）
+## 5. AI nodes (S2, outside project scope)
 
-| 节点 | 作用 | 出口 | 能否作为起始节点 |
+| Node | Purpose | Outputs | Can start a flow |
 |---|---|---|---|
-| Wati AI Assist | 通过对话收集一个联系人属性并保存 | Success / Failure 两条路径 | 可以 |
-| Astra AI Agent | 把会话交给 Astra AI Agent | 在此结束 chatbot | 不可以 |
-| Custom AI Agent | 把会话交给用户自己接入的 AI Agent | 在此结束 chatbot | 不可以 |
+| Wati AI Assist | Collect and save one contact attribute through conversation | Success and Failure paths | Yes |
+| Astra AI Agent | Hand the conversation off to Astra AI Agent | Ends the chatbot flow | No |
+| Custom AI Agent | Hand the conversation off to the user's integrated AI agent | Ends the chatbot flow | No |
 
-支持渠道：WhatsApp、Instagram、Facebook Messenger。
+Supported channels include WhatsApp, Instagram, and Facebook Messenger.
 
-## 6. 其他 "similar nodes"（未来可扩展，不展开）
+## 6. Other nodes for future consideration
 
-S2 相关文章中提到、但本期不实现的节点：
+S2 mentions the following nodes or categories in related articles. They are outside the current project scope.
 
-| 节点 | S2 中的描述 |
+| Node or category | Description in S2 |
 |---|---|
-| Template | 有专门文章（*Template Node*），未展开 |
-| Trigger Chatbot | 让一个 chatbot 启动另一个 chatbot |
-| Smart Escalation | 当客户要求人工或表现出不满时，把会话分配给团队 |
-| Catalog 类节点 | 仅提到分组名称 |
+| Template | Covered in the separate *Template Node* article |
+| Trigger Chatbot | Lets one chatbot start another chatbot |
+| Smart Escalation | Assigns a conversation to a team when a customer asks for a human or shows frustration |
+| Catalog nodes | Listed as a category |
 
-## 7. 题目示例拆解
-
-输入：
+## 7. Exercise example
 
 > When a new contact messages us, ask if they're a buyer or seller, then route buyers to sales and send sellers our help article.
 
-| 意图要素 | 内容 | 节点 |
+| Intent element | Requirement | Node or flow element |
 |---|---|---|
-| Trigger | 新联系人发来消息 | flow 触发条件 |
-| Action | 询问是买家还是卖家 | Ask Question（选项：Buyer / Seller） |
-| Condition | 按回答分支 | Ask Question 的分支，或接一个 Condition |
-| Action（Buyer） | 转给销售团队 | Assign to Team（Sales） |
-| Action（Seller） | 发送帮助文章 | Send Message（帮助文章链接） |
-| Timing | 未提及 | — |
+| Trigger | A new contact sends a message | Flow trigger |
+| Action | Ask whether the contact is a buyer or seller | Ask Question with Buyer and Seller options |
+| Condition | Branch according to the answer | Branches on Ask Question or a subsequent Condition |
+| Action (Buyer) | Route the contact to the sales team | Assign to Team (Sales) |
+| Action (Seller) | Send the help article | Send Message with the article link |
+| Timing | Unspecified | — |
 
-示例中没有说明、需要追问用户或由校验器提示的点：
+The example leaves three questions for clarification or validation.
 
-- 用户回答既不是 Buyer 也不是 Seller 时怎么办？
-- 帮助文章的链接是什么？
-- 销售团队在系统里具体叫什么？
+- What happens if the user answers with something other than Buyer or Seller?
+- What is the help article URL?
+- What is the exact name of the sales team in the workspace?
 
-这正是多轮追问（clarify）和校验器要处理的典型情况。
+## 8. Open design decisions
 
-## 8. 待设计决定（来源未说明）
+The [design document](./design.md) resolves the following details left open by S1 and S2.
 
-以下内容 S1、S2 都没有给出，由 `docs/design.md` 统一决定：
-
-- 各节点的具体字段：消息内容格式、提问方式（选项还是自由文本）、回答存到哪个变量、Condition 的运算符、API Call 的请求和响应结构、Wait 的时长单位与上限。
-- 各节点的出口规则：Ask Question 有没有兜底分支、Condition 的分支形式、API Call 有没有成功和失败两个出口。
-- 结束方式：用显式的 End 节点，还是没有出边即结束。
-- 支持哪些触发类型：新联系人消息、关键词等。
+- **Node fields** include the message format, question mode (options or free text), answer variable, Condition operators, API Call request and response structure, and Wait duration units and limits.
+- **Branch rules** include whether Ask Question requires a fallback, how Condition represents its branches, and whether API Call has success and failure paths.
+- **Flow termination** can use an explicit End node or rely on the absence of an outgoing edge.
+- **Supported triggers** may include new contact messages, keywords, and other trigger types.

@@ -1,332 +1,335 @@
-# 设计文档：Automation Builder Copilot
+# Automation Builder Copilot design
 
-> 这是一份面试题，原则是**最小可用**：把一条主线做扎实，不铺功能。
-> 节点词汇的依据见 [wati-node-reference.md](./wati-node-reference.md)。
+This take-home exercise focuses on delivering a single, usable workflow. The [Wati chatbot node reference](./wati-node-reference.md) defines the node vocabulary.
 
-## 1. 范围
+## 1. Scope
 
-**主线**：用户多轮描述需求 → Agent 生成或修改 flow → 确定性校验 → 用大白话解释 → 用户在模拟器里试跑。
+The user describes requirements over several turns. The agent builds or edits the flow, the validator checks it, and the agent explains the result in plain language. The user can then try the flow in the simulator.
 
-| 做 | 不做（放到 V2） |
+| Current scope | V2 |
 |---|---|
-| 6 种节点（题目点名的六种）+ 2 种触发方式 | AI 节点、Template、Catalog 等其他节点 |
-| 多轮对话：新建、增量修改、追问 | 撤销 / 回滚到历史版本（只保留版本记录） |
-| 确定性校验器 | 用 LLM 再审查一遍风险 |
-| Agent 生成，外加一次 LLM 调用做解释 | 自动生成测试用例并批量运行 |
-| 模拟器（API 调用用 mock 结果） | 真实发出 HTTP 请求、发布上线 |
-| 内存存储，单进程 | 持久化、鉴权、多用户 |
-| 单页前端：对话 + 节点图 + 模拟器 | 在图上手动编辑节点 |
+| The six required node types and two trigger types | AI, Template, Catalog, and other node types |
+| Multi-turn conversation for creating flows, making incremental edits, and asking clarifying questions | Undo and rollback to previous versions. The current version history records each commit. |
+| Deterministic validation | An additional LLM-based risk review |
+| Agent-generated flows and a separate LLM call for explanations | Automatic test case generation and batch execution |
+| Simulator with mock API responses | Live HTTP requests and publishing |
+| In-memory storage in a single process | Persistence, authentication, and multiple users |
+| Single-page frontend with chat, a flow graph, and a simulator | Manual node editing on the graph |
 
-题目要求的"至少一个 AI 能力"，这里满足两项：**flow 生成**和**大白话解释**。
+The exercise calls for at least one AI capability. This project provides **flow generation** and **plain-language explanations**.
 
-## 2. 架构
+## 2. Architecture
 
-```
-frontend/  Vite + React + TS + React Flow
+```text
+frontend/  Vite + React + TypeScript + React Flow
 backend/
   app/
-    api/        FastAPI 路由，只负责收发请求和转换数据
-    domain/     纯确定性代码，不依赖 LLM
-      models.py     Flow / Node / Edge / Trigger（Pydantic）
-      registry.py   节点注册表：用途、字段、出口规则（提示词和校验都从这里生成）
-      edits.py      编辑操作的执行器（整批原子执行）
-      validator.py  图校验
-      engine.py     模拟执行引擎
-      diff.py       两个版本之间的差异
-    copilot/    Agent：提示词、工具、有上限的循环、解释
-    llm/        对 OpenAI 兼容接口的薄封装
-    store.py    内存存储
-    config.py   pydantic-settings，读取 .env
+    api/        FastAPI routes for handling requests and converting data
+    domain/     Deterministic logic with no LLM dependency
+      models.py     Flow, Node, Edge, and Trigger models (Pydantic)
+      registry.py   Node purposes, fields, and output rules for prompts and validation
+      edits.py      Atomic execution of edit batches
+      validator.py  Graph validation
+      engine.py     Simulation engine
+      diff.py       Changes between flow versions
+    copilot/    Agent prompts, tools, bounded tool loop, and explanations
+    llm/        Thin wrapper around an OpenAI-compatible API
+    store.py    In-memory storage
+    config.py   pydantic-settings for reading .env
   tests/
 ```
 
-依赖方向：`api → copilot → domain`，`copilot → llm`。`domain` 不知道 LLM 的存在。
+Dependencies follow `api → copilot → domain` and `copilot → llm`. The **LLM proposes changes**, and **deterministic code validates and executes them**.
 
-**核心原则：LLM 负责提议，确定性代码负责最终决定。** 校验和执行都不经过 LLM。
-
-## 3. 数据模型
+## 3. Data model
 
 ### 3.1 Flow
 
-```jsonc
+```json
 {
   "id": "flow_x",
   "version": 3,
   "name": "Buyer / Seller routing",
-  "trigger": { "type": "new_contact_message" },  // 或 { "type": "keyword", "keywords": ["hi"] }
+  "trigger": { "type": "new_contact_message" },
   "start_node_id": "ask_role",
-  "nodes": [ /* Node */ ],
-  "edges": [ /* Edge */ ]
+  "nodes": [],
+  "edges": []
 }
 ```
 
-### 3.2 节点（6 种）
+The `nodes` and `edges` arrays contain Node and Edge objects. For a keyword trigger, use `{ "type": "keyword", "keywords": ["hi"] }`.
 
-| type | 字段 | 出口（handle） | 是否可作为终点 |
+### 3.2 Node types
+
+| Type | Fields | Output handles | Can end a flow |
 |---|---|---|---|
-| `send_message` | `text` | `next` | 可以（没有出边就结束） |
-| `ask_question` | `text`, `mode: buttons \| text`, `options[]`（仅 buttons 模式，1–3 项）, `save_as`（变量名） | buttons 模式：每个选项一个出口 `option:<选项>`，再加一个 `fallback`；text 模式：`next` | 不可以 |
-| `condition` | `variable`, `operator: equals \| not_equals \| contains`, `value` | `true` / `false` | 不可以 |
-| `api_call` | `method: GET \| POST`, `url`, `body?`, `save_as?` | `success` / `failure` | 不可以 |
-| `assign_team` | `team` | `next`（可选） | 可以 |
-| `wait` | `duration_seconds`（1 ~ 86400） | `next` | 不可以 |
+| `send_message` | `text` | `next` | Yes, when there is no outgoing edge |
+| `ask_question` | `text`, `mode: buttons \| text`, `options[]` (1–3 in buttons mode only), `save_as` (variable name) | Buttons mode has one `option:<option>` output per option plus `fallback`. Text mode has `next`. | No |
+| `condition` | `variable`, `operator: equals \| not_equals \| contains`, `value` | `true` / `false` | No |
+| `api_call` | `method: GET \| POST`, `url`, `body?`, `save_as?` | `success` / `failure` | No |
+| `assign_team` | `team` | `next` (optional) | Yes |
+| `wait` | `duration_seconds` (1–86,400) | `next` | No |
 
-> 设计取舍：
-> - **不设 End 节点**：没有出边就是结束，但只有 `send_message` 和 `assign_team` 允许作为终点，其他节点的出口必须全部连上。这样既少一种节点，校验器也能发现"漏连线"的问题。
-> - **Condition 只支持单条规则**，不支持 AND/OR 组合，放到 V2。
-> - 选项数量和等待时长的上限是本项目自己定的，不代表 Wati 平台的真实限制。
+- A flow ends at a `send_message` or `assign_team` node with no outgoing edge. Requiring outgoing edges on other node types lets the validator catch missing connections without an explicit End node.
+- A Condition supports one rule. V2 adds AND/OR combinations.
+- The option count and wait duration limits apply to this project.
 
-### 3.3 边
+### 3.3 Edges
 
 ```jsonc
 { "from": "ask_role", "handle": "option:Buyer", "to": "assign_sales" }
 ```
 
-同一个节点的同一个出口最多只能有一条边，`handle` 必须是该节点类型允许的出口之一。
+Each node output supports at most one edge. The `handle` must identify an output supported by the source node.
 
-### 3.4 变量
+### 3.4 Variables
 
-- 来源：`ask_question.save_as`、`api_call.save_as`，加上联系人内置字段 `contact.name`、`contact.phone`。
-- 用法：消息里写 `{{变量名}}`，或者作为 Condition 的 `variable`。
-- **什么时候写入变量**（变量写在出口上，不同出口写入的变量不一样）：
+Variables come from `ask_question.save_as`, `api_call.save_as`, and the built-in contact fields `contact.name` and `contact.phone`. Refer to a variable with `{{variable_name}}` in a message or by name in a Condition's `variable` field.
 
-  | 节点 / 出口 | 是否写入 `save_as` | 写入的值 |
-  |---|---|---|
-  | `ask_question` buttons 模式 · `option:<选项>` | 是 | 选项**原文**（见 3.7） |
-  | `ask_question` buttons 模式 · `fallback` | **否** | — |
-  | `ask_question` text 模式 · `next` | 是 | 用户输入去掉首尾空白后的内容 |
-  | `api_call` · `success` | 是（如果设置了 `save_as`） | mock 的响应体 |
-  | `api_call` · `failure` | **否** | — |
+The output taken determines whether the engine writes a variable.
 
-- **规则：使用变量时，从起点出发、能走到这个节点的每一条路径上，这个变量都必须已经写入。** 只要有一条路径上没有写入，就判为 error。
-  - 例子：买家和卖家两条分支最后汇合，但只有卖家分支问过并保存了 `email`。那么汇合之后的 `已发送到 {{email}}` 判为 error，因为走买家分支到这里时没有这个值。
-  - 实现方法（必定赋值分析）：起点处已定义的变量只有 `contact.*`。每个节点**进入时**已定义的变量，等于**所有入边**带来的已定义变量的**交集**；每条边带来的变量，等于出发节点进入时已定义的变量，再加上这个出口写入的变量。按这个规则反复迭代到结果不再变化，循环也能处理。从起点走不到的节点不参与计算，它们已经有单独的 warning。
+| Node and output | Writes `save_as` | Value |
+|---|---|---|
+| `ask_question` in buttons mode, `option:<option>` | Yes | Original option text (see section 3.7) |
+| `ask_question` in buttons mode, `fallback` | No | — |
+| `ask_question` in text mode, `next` | Yes | User input with leading and trailing whitespace removed |
+| `api_call`, `success` | Yes, if `save_as` is set | Mock response body |
+| `api_call`, `failure` | No | — |
 
-### 3.5 工作区信息（mock）
+Every path from the start to a node that reads a variable must define the variable before the read. The validator reports an error if any of those paths leaves it undefined.
+
+For example, suppose the buyer and seller branches merge, and only the seller branch asks for and saves `email`. A message reading `Sent to {{email}}` after the merge causes a validation error because the buyer path leaves `email` undefined.
+
+The validator uses definite assignment analysis. At the start, only the built-in `contact.*` variables are defined. Each outgoing edge carries the variables defined when entering its source node plus any variable written by that output. The variables defined at a node's entry are the intersection of the sets from all its incoming edges. The validator repeats this calculation until the sets stop changing, which also handles cycles. Unreachable nodes are excluded because they have their own warning.
+
+### 3.5 Mock workspace
 
 ```jsonc
 { "teams": ["Sales", "Support", "Billing"] }
 ```
 
-Agent 只能使用这里列出的团队名；如果用户提到不存在的团队，Agent 要向用户追问。
+The agent can use only teams listed in the workspace. It asks the user to clarify when a requested team is missing.
 
-### 3.6 会话
+### 3.6 Sessions
 
-```
+```text
 Session { id, messages[], versions[Flow], current_version }
 ```
 
-- 刚创建的会话没有 flow：`versions` 为空，`current_version` 为 `null`。
-- **只有本轮最终的差异不为空时**，才追加一个新版本；差异为空就沿用原版本。
-- 版本号只在提交时增加，每一轮最多提交一次。
+- A new session has an empty `versions` list and `current_version` set to `null`.
+- A turn appends a version only if the final diff contains changes. An empty diff keeps the current version.
+- The version number increments on commit. A turn can commit at most once.
 
-### 3.7 选项匹配规则
+### 3.7 Option matching
 
-校验器和执行引擎共用 `domain` 里的同一个 `normalize()` 函数：去掉首尾空白、把连续空白合并成一个空格、统一转成小写（casefold）。
+The validator and execution engine share the `domain` function `normalize()`, which trims leading and trailing whitespace, collapses whitespace runs to one space, and applies case folding.
 
-- **去重**：归一化之后相同的选项算重复，比如 `Buyer` 和 ` buyer` 是重复的，判为 error。
-- **匹配顺序**：
-  1. 先拿归一化后的输入和归一化后的选项**文字**比较；
-  2. 文字匹配不上，并且输入是 `1`–`n` 之间的整数时，再按**序号**匹配；
-  3. 都匹配不上就走 `fallback`。
-- **数字选项和序号冲突时文字优先**：比如选项是 `["2", "1"]`，用户输入 `1`，命中的是文字为 `"1"` 的那个选项（第 2 项）。
-- **写入的值**：不管是按文字还是按序号命中的，`save_as` 都保存选项**原文**。用户输入 `1` 或 `buyer`，保存的都是 `"Buyer"`，这样后面的 `condition equals Buyer` 结果一致。
-- `handle` 也使用选项原文：`option:Buyer`。
+- **Duplicate options** cause a validation error when their normalized text is the same. For example, `Buyer` and ` buyer` are duplicates.
+- **Matching order** starts with a comparison between normalized input and normalized option text. If there is no text match and the input is an integer from `1` through `n`, it selects the option at that position. Otherwise, it follows `fallback`.
+- **Text matches take precedence.** With options `["2", "1"]`, the input `1` matches the text `"1"` in the second position.
+- **The engine stores the original option text** in `save_as` for both text and position matches. If `Buyer` is the first option, both `1` and `buyer` save `"Buyer"` so a later `condition equals Buyer` behaves consistently.
+- The output `handle` also uses the original text, for example `option:Buyer`.
 
-## 4. 编辑操作（`apply_edits`）
+## 4. Edit operations (`apply_edits`)
 
-| op | 参数 | 说明 |
+| Operation | Parameters | Behavior |
 |---|---|---|
-| `add_node` | `node` | id 由 LLM 命名（如 `ask_role`），系统检查是否重复 |
-| `update_node` | `id`, `changes` | 只传要改的字段，系统合并到原节点上；不能改 `type` |
-| `remove_node` | `id` | 连带删除与它相关的边 |
-| `connect` | `from`, `handle`, `to` | 如果这个出口已经有边，就替换掉 |
+| `add_node` | `node` | The LLM supplies an ID such as `ask_role`. The system checks for duplicates. |
+| `update_node` | `id`, `changes` | Send only the changed fields. The system merges them into the existing node and disallows changes to `type`. |
+| `remove_node` | `id` | Removes the node and its connected edges. |
+| `connect` | `from`, `handle`, `to` | Replaces any existing edge on the specified output. |
 | `disconnect` | `from`, `handle` | |
 | `set_trigger` | `trigger` | |
 | `set_start` | `node_id` | |
 
-一批操作在草稿副本上**原子执行**：只要有一个操作不合法，整批都不生效，并按操作序号返回错误。
+The system applies each batch **atomically** to a copy of the draft. An invalid operation rejects the whole batch and returns an error that identifies the operation by its position.
 
-### 差异（diff）
+### Diff
 
-差异由 `diff.py` 比较前后两个版本得出，和用了哪些操作无关，所以 `replace_flow` 也能得到准确的差异。
+`diff.py` compares the previous and new flow versions directly. The same comparison works for incremental edits and `replace_flow`.
 
-```jsonc
-{ "kind": "added | removed | changed",
-  "target": "node | edge | trigger | start",
-  "id": "节点 id；如果是边，就是 from:handle",
-  "before": "...", "after": "..." }   // changed 时提供
-```
-
-- 只改了起点：输出一条 `{ "kind": "changed", "target": "start", "before": "ask_role", "after": "greet" }`。
-- 改了触发方式：输出 `target: "trigger"`，并带上前后两个值。
-
-## 5. 校验规则
-
-有 **error** 时不能保存为有效版本，也不能开始模拟；**warning** 只做提示，不阻止任何操作。
-
-| 级别 | 规则 |
-|---|---|
-| error | 数据结构不符合 schema（Pydantic 校验失败） |
-| error | 起始节点不存在；边指向不存在的节点；节点 id 重复 |
-| error | `handle` 不是该节点类型允许的出口；同一个出口连了多条边 |
-| error | 必须连接的出口没有连上（每个选项和 `fallback`、`true`/`false`、`success`/`failure`、`wait` 和 text 模式提问的 `next`） |
-| error | 存在一个循环，循环里没有任何 `ask_question` 节点（会无限执行下去，不等用户输入） |
-| error | 选项数量不在 1–3 之间，或有重复的选项（按 3.7 节归一化后比较） |
-| error | `wait` 的时长超出范围 |
-| error | `assign_team` 的团队不在工作区列表里 |
-| error | 使用变量时，存在一条能到达这里、但没有写入该变量的路径（规则见 3.4） |
-| warning | 存在从起始节点走不到的节点 |
-| warning | `api_call` 的 URL 不是 https |
-| warning | 提问内容疑似在收集敏感信息（关键词匹配：password、card number、CVV、OTP 等） |
-
-每一条问题的结构是 `{ level, code, message, node_id? }`，前端根据 `node_id` 在图上标出对应的节点。
-
-## 6. 模拟执行引擎
-
-- 状态：`{ current_node_id, variables, transcript[], trace[], status }`
-- `status` 的取值：`waiting_input`（等待用户输入）、`completed`（正常结束）、`assigned`（已转人工）、`error`、`max_steps`（超出步数上限）
-- 推进规则：从当前节点开始一直往下走，遇到需要用户输入的节点就停下。
-  - `ask_question`（buttons 模式）：按 3.7 节的规则匹配。命中时把选项原文写入 `save_as`，走对应选项的出口；匹配不上就走 `fallback`，不写入变量。
-  - `ask_question`（text 模式）：把去掉首尾空白的输入写入变量，然后走 `next`。
-  - `api_call`：不发出真实请求。按调用方传入的设置返回成功或失败，默认成功。成功时写入 mock 的响应体，失败时不写入。
-  - 变量写入的时机和 3.4 节的表格完全一致，所以校验通过的 flow 在运行时不会读到缺失的变量。为了防御，如果运行时真的读到了缺失变量，引擎把状态设为 `error`，而不是替换成空字符串。
-  - `wait`：不真的等待，只在轨迹里记一笔"等待了 X 秒"，然后继续。
-  - `assign_team`：记录转给了哪个团队；如果没有后续节点，状态变为 `assigned`。
-  - 消息中的 `{{变量}}` 会被替换成实际的值。
-- 步数上限由 `SIM_MAX_STEPS` 配置。
-- **只有一份执行逻辑**：Agent 的 `simulate` 工具和用户在前端用的模拟器，调用的是同一个引擎。
-
-## 7. Agent
-
-### 7.1 每一轮的处理流程
-
-```
-用户消息
-  → 读取会话：当前 flow、最近几轮对话、工作区信息
-  → 有上限的工具调用循环（最多 AGENT_MAX_ITERATIONS 步，tool_choice=required）
-       所有修改都写在草稿上；每次修改后系统自动校验，结果随工具返回值交给 Agent
-       必须以 finish 或 ask_user 结束
-  → 按 7.3 节确定本轮的 status；如果需要提交，就保存为新版本（每轮最多提交一次）
-  → 【提交之后】有新版本时，再做一次 LLM 调用生成大白话解释（尽力而为）
-       失败或超时：用差异和 finish.summary 拼出一段简短说明代替，
-       status 保持 completed / partial 不变，并标记 explanation_source = "fallback"
-  → 返回结果
-```
-
-**提交是分界线**：提交之前出的任何问题，结果都是 `failed`，flow 不变；提交之后出的问题（目前只有生成解释这一步），不影响 status 和版本。这样用户看到 `failed` 重试时，不会把同一个修改执行两次。
-
-### 7.2 工具
-
-| 工具 | 是否结束本轮 | 作用 | 返回 |
-|---|---|---|---|
-| `replace_flow(flow)` | 否 | 整体写入 flow；用在从零生成，或用户明确要求重做时 | flow 大纲 + 校验结果 |
-| `apply_edits(ops[])` | 否 | 增量修改；flow 已经存在时默认用这个 | flow 大纲 + 校验结果 + 本次差异 |
-| `simulate(scenarios[])` | 否 | 每个场景是一组用户输入，可以指定 API 调用的 mock 结果；用来让 Agent 用用户的原意检验自己的结果 | 每个场景的执行路径和最终状态 |
-| `ask_user(questions[])` | 是 | 缺少无法合理假设的关键信息时追问，最多 3 个问题 | — |
-| `finish(summary, assumptions[], unsupported[])` | 是 | 提交结果；如果有 error，系统会打回，Agent 要接着修 | — |
-
-**为什么是这几个工具：**
-- **两个写入工具**：只用 `replace_flow` 的话，每次修改都要重写整份 flow，容易改到用户没要求改的地方；只用 `apply_edits` 的话，第一次生成要用几十个操作拼出整个图，啰嗦又容易出错。
-- **写入后直接返回校验结果**：省掉"修改 → 查询 → 校验"这样的多次往返，而且 Agent 不可能跳过校验。
-- **`simulate` 的必要性**：校验器只能检查结构，检查不了行为。比如买家和卖家的分支接反了，结构完全合法，只有实际跑一遍才能发现。
-- **不提供 `validate` 工具**：校验由系统强制执行，不需要 Agent 主动调用。
-
-### 7.3 每一轮的结果类型
-
-按下表**从上到下**判定，命中第一条就停。"差异"指草稿和当前有效版本的比较结果；`finish` 被调用时，草稿一定已经通过了最终校验，否则会被打回。
-
-| # | 条件 | status | 版本 | 返回的 `flow` / `version` |
-|---|---|---|---|---|
-| 1 | Agent 循环中 LLM 调用失败（重试之后） | `failed` | 不变 | 原版本；如果还没有 flow，就是 `null` |
-| 2 | 步数用完，**没有**调用过结束工具（不管草稿是否合法） | `failed` | 不变 | 原版本；草稿和问题列表放在 `draft` / `issues` 里 |
-| 3 | `ask_user` | `clarification` | 不变 | 原版本；**第一轮就追问时是 `null`** |
-| 4 | `finish`，差异不为空，`unsupported` 为空 | `completed` | +1 | 新版本 |
-| 5 | `finish`，差异不为空，`unsupported` 不为空 | `partial` | +1 | 新版本 |
-| 6 | `finish`，差异为空，`unsupported` 不为空 | `declined` | 不变 | 原版本（可能是 `null`） |
-| 7 | `finish`，差异为空，`unsupported` 为空（比如"这个流程是做什么的？"，或者要求已经满足） | `completed` | **不变** | 原版本，`diff: []` |
-
-> 说明：
-> - 第 2 条：草稿合法但 Agent 没有调用 `finish`，也不自动提交。因为 Agent 没有确认结果符合用户的意图，而且也拿不到 `unsupported`。
-> - 被打回的 `finish` 也计入步数。
-
-**三条原则：**
-1. 不偷偷删掉需求，也不假装做到了。做不到的需求必须写进 `unsupported`。
-2. Agent 不能绕过校验器报的 error：要么改好，要么承认做不到。
-3. 上一个有效版本永远不会被破坏。
-
-### 7.4 系统提示词
-
-结构依次是：
-1. **角色和原则**：只能使用下面列出的节点；不允许编造团队名或链接；替代方案如果会改变用户意图，就要先追问。
-2. **节点目录**：**从 `registry.py` 自动生成**，不手写，保证提示词和代码一致。
-3. **编辑操作目录。**
-4. **工作区信息。**
-5. **一个示例**：题目里的买家/卖家例子，从输入到最终 flow。
-6. **结束规则**：每一轮必须以 `finish` 或 `ask_user` 结束。
-
-之后是动态内容：当前 flow 的大纲、最近几轮对话、用户这次的消息。
-
-工具参数在发给服务商时只声明成普通对象（不依赖严格的 JSON schema 模式），真正的校验在后端用 Pydantic 完成。参数不合法时，把错误作为工具结果返回给 Agent，不中断循环。
-
-### 7.5 失败处理与可观测性
-
-- LLM 调用超时或被限流：SDK 自动重试 `LLM_MAX_RETRIES` 次。
-  - 发生在 Agent 循环中（提交之前）：返回 `failed`，flow 不变。
-  - 发生在生成解释时（提交之后）：使用代替说明，status 和版本都不受影响（见 7.1）。
-- 调用了不存在的工具，或者参数不合法：作为错误返回给 Agent，计入步数。
-- 每一轮分配一个 `trace_id`，记录每一步的工具名、参数摘要、校验结果、耗时。这些信息写进结构化日志，也随响应返回，前端可以折叠展示。
-
-## 8. API
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/sessions` | 创建会话 |
-| GET | `/api/sessions/{id}` | 获取会话：对话记录和当前 flow |
-| POST | `/api/sessions/{id}/messages` | 发送一条消息，执行一轮 Agent |
-| POST | `/api/sessions/{id}/simulations` | 基于当前 flow 开始一次模拟，可以传入 API mock 设置 |
-| POST | `/api/simulations/{sim_id}/input` | 在模拟中发送用户输入 |
-
-`POST /messages` 的响应：
-
-```jsonc
+```json
 {
-  "status": "completed | partial | declined | clarification | failed",
-  "reply": "给用户看的回复：总结、追问或拒绝原因",
-  "flow": { /* 当前有效 flow */ },   // 还没有任何有效版本时为 null（比如第一轮就追问）
-  "version": 3,                       // 同上，可以是 null
-  "diff": [ /* 见第 4 节差异的定义；没有新版本时为 [] */ ],
-  "issues": [ /* 校验问题 */ ],
-  "explanation": "大白话解释",        // 没有新版本时为 null
-  "explanation_source": "llm | fallback",
-  "assumptions": [],
-  "unsupported": [],
-  "draft": null,      // 只在 failed 时返回
-  "trace": [ /* Agent 每一步的记录 */ ]
+  "kind": "added | removed | changed",
+  "target": "node | edge | trigger | start",
+  "id": "Node ID or from:handle for an edge",
+  "before": "...",
+  "after": "..."
 }
 ```
 
-## 9. 前端
+Changed entries include both `before` and `after` values.
 
-单页三栏：
-- **左栏**：和 Copilot 的对话，展示回复、追问、假设、未实现的需求。
-- **中栏**：React Flow 节点图，用 dagre 自动布局；有问题的节点标红或标黄，模拟时高亮当前节点。
-- **右栏**：三个 Tab，分别是**解释与问题**、**模拟器**、**JSON**。
+- Changing only the start produces one entry, for example `{ "kind": "changed", "target": "start", "before": "ask_role", "after": "greet" }`.
+- Changing the trigger produces an entry with `target: "trigger"` and both the old and new values.
 
-## 10. 测试
+## 5. Validation rules
 
-| 层 | 测什么 |
+An **error** blocks saving a valid version and starting a simulation. A **warning** is advisory.
+
+| Severity | Rule |
 |---|---|
-| `domain` 单元测试 | 每条校验规则都有一个正例和一个反例；编辑操作的原子性；引擎的各种状态（fallback 分支、API 失败分支、步数上限、变量替换） |
-| 变量分析 | 分支汇合时只有一条分支写入了变量 → error；两条分支都写入了 → 通过；从 `fallback` 或 `failure` 出口过来后使用该变量 → error；带循环的 flow 能正确收敛 |
-| 选项匹配 | `Buyer` 和 `buyer` 判为重复；输入 `1` 和 `buyer` 保存的值相同，都是 `"Buyer"`；数字选项和序号冲突时文字优先 |
-| 差异 | 只执行 `set_start` → 版本加 1，差异里只有一条 `target: start`，带前后两个值 |
-| Agent 循环 | 用一个按脚本返回结果的假 LLM，覆盖 7.3 节表格里的每一行（包括：第一轮就追问时 `flow` 为 `null`；步数用完、草稿合法但没有调用 `finish`；`finish` 但没有修改）；被校验打回后修好 |
-| 提交与解释 | 假 LLM 在 Agent 循环中成功，但生成解释时超时 → status 是 `completed`，版本**只增加一次**，`explanation_source` 是 `fallback` |
-| 演示用例 | 3 条演示用的自然语言输入，用真实 LLM 手动跑一遍 |
+| error | The data fails Pydantic schema validation. |
+| error | The start node is missing, an edge points to a missing node, or node IDs are duplicated. |
+| error | A `handle` is invalid for its node, or multiple edges use the same output. |
+| error | A required output has no connection. Required outputs include each option and `fallback`, `true` and `false`, `success` and `failure`, and `next` on `wait` and text-mode questions. |
+| error | A cycle contains no `ask_question` node and can run indefinitely without waiting for input. |
+| error | A question has fewer than one or more than three options, or has duplicates after normalization (see section 3.7). |
+| error | The `wait` duration is outside the allowed range. |
+| error | An `assign_team` node names a team outside the workspace. |
+| error | A node reads a variable that at least one path to that node leaves undefined (see section 3.4). |
+| warning | A node is unreachable from the starting node. |
+| warning | An `api_call` URL uses a scheme other than HTTPS. |
+| warning | A question appears to request sensitive information based on keywords such as password, card number, CVV, or OTP. |
 
-## 11. 演示用例
+Each issue has the structure `{ level, code, message, node_id? }`. The frontend uses `node_id` to highlight the relevant node in the graph.
 
-1. **题目原例**：买家/卖家分流。演示：Agent 追问帮助文章的链接 → 生成 flow → 解释 → 模拟买家、卖家和乱输入三条路径。
-2. **多轮修改**："卖家收到文章后等 1 小时再问一句有没有帮到他" → 演示 `apply_edits` 和差异展示。
-3. **有问题的请求**："把 VIP 用户转给 VIP 团队，同时给他们发封邮件" → 演示团队不存在时的追问，以及邮件被标为 `unsupported`。
+## 6. Simulation engine
+
+- The state is `{ current_node_id, variables, transcript[], trace[], status }`.
+- Possible statuses are `waiting_input` (waiting for user input), `completed` (ended normally), `assigned` (handed off to a team), `error`, and `max_steps` (step limit exceeded).
+- The engine advances from the current node until it reaches a node that requires input or a terminal state.
+  - In buttons mode, `ask_question` matches input using section 3.7. On a match, it saves the original option text to `save_as` and takes that option's output. An unmatched input takes `fallback` without writing the variable.
+  - In text mode, `ask_question` trims the input, saves it to the variable, and takes `next`.
+  - `api_call` uses the caller's mock result, which defaults to success, and writes the mock response body on success when `save_as` is set. Failure leaves the variable unwritten.
+  - The engine writes variables at the points defined in section 3.4. If a missing variable is read at runtime, the engine sets its status to `error`.
+  - `wait` records the simulated delay in the trace and immediately continues.
+  - `assign_team` records the team and sets the status to `assigned` if there is no following node.
+  - In messages, `{{variable}}` is replaced with the variable's value.
+- `SIM_MAX_STEPS` controls the step limit.
+- The agent's `simulate` tool and the frontend simulator use the same execution engine.
+
+## 7. Agent
+
+### 7.1 Turn lifecycle
+
+```text
+User message
+  → Load the current flow, recent messages, and workspace from the session
+  → Run a bounded tool loop (up to AGENT_MAX_ITERATIONS steps, tool_choice=required)
+       Apply edits to the draft and return validation results after each write
+       End with finish or ask_user
+  → Determine status using section 7.3 and commit a new version if eligible
+       Commit at most once per turn
+  → After a commit, make a best-effort LLM call for a plain-language explanation
+       On failure or timeout, build a short explanation from the diff and finish.summary
+       Preserve completed or partial and set explanation_source to "fallback"
+  → Return the result
+```
+
+A pre-commit failure returns `failed` with the current flow intact, so retrying a failed turn cannot apply the same edit twice. A post-commit explanation failure preserves the committed version and status.
+
+### 7.2 Tools
+
+| Tool | Ends the turn | Purpose | Returns |
+|---|---|---|---|
+| `replace_flow(flow)` | No | Write the entire flow for initial generation or an explicit rebuild request. | Flow outline and validation results |
+| `apply_edits(ops[])` | No | Apply incremental changes. This is the default for an existing flow. | Flow outline, validation results, and diff for this batch |
+| `simulate(scenarios[])` | No | Check behavior against the user's intent. Each scenario contains user inputs and can specify mock API results. | Execution path and final status for each scenario |
+| `ask_user(questions[])` | Yes | Ask up to three questions when key information is missing and cannot reasonably be inferred. | — |
+| `finish(summary, assumptions[], unsupported[])` | Yes | Finalize the result. The system rejects drafts with errors, and the agent continues to fix them. | — |
+
+- `replace_flow` creates an entire graph in one call. `apply_edits` limits changes on an existing graph to the requested fields and connections.
+- Each write returns validation results in the same call, so the agent gets feedback immediately and validation runs on every write.
+- `simulate` checks behavior that structural validation cannot detect. For example, a graph with the buyer and seller branches swapped can be structurally valid.
+- Validation runs automatically after edits and at finalization, so the agent needs no separate validation tool.
+
+### 7.3 Turn results
+
+Evaluate the rows from top to bottom and stop at the first match. The diff compares the draft with the current valid version. A `finish` call is accepted only when the draft passes final validation.
+
+| # | Condition | Status | Version | Returned `flow` and `version` |
+|---|---|---|---|---|
+| 1 | An LLM call in the agent loop fails after retries | `failed` | Unchanged | Previous version, or `null` if the session has no flow |
+| 2 | The step limit is reached without an accepted terminal tool call, even if the draft is valid | `failed` | Unchanged | Previous version. The response includes the draft and its issues in `draft` and `issues`. |
+| 3 | `ask_user` | `clarification` | Unchanged | Previous version, or **`null` when the first turn asks for clarification** |
+| 4 | `finish` with a non-empty diff and empty `unsupported` | `completed` | +1 | New version |
+| 5 | `finish` with a non-empty diff and non-empty `unsupported` | `partial` | +1 | New version |
+| 6 | `finish` with an empty diff and non-empty `unsupported` | `declined` | Unchanged | Previous version, which may be `null` |
+| 7 | `finish` with an empty diff and empty `unsupported`, such as an explanation request or an already satisfied requirement | `completed` | **Unchanged** | Previous version with `diff: []` |
+
+Row 2 leaves even a valid draft uncommitted because the agent has yet to confirm it meets the user's intent or provide `unsupported`. Rejected `finish` calls count toward the step limit.
+
+1. Record every requirement the builder cannot fulfill in `unsupported`.
+2. Resolve validator errors before finalizing a draft. If the builder cannot fulfill a requirement, report it as unsupported.
+3. Preserve the last valid version on unsuccessful turns.
+
+### 7.4 System prompt
+
+The system prompt contains the following sections in order.
+
+1. **Role and principles.** Use the listed node types and known team names and links. Ask before choosing an alternative that changes the user's intent. Write Copilot responses and explanations in English. Use English for generated flow messages by default and follow explicit user requirements for flow content.
+2. **Node catalog.** Generate it from `registry.py` to keep prompt and code in sync.
+3. **Edit operation catalog.**
+4. **Workspace information.**
+5. **Worked example.** Show how the exercise's buyer and seller request becomes a flow.
+6. **End-of-turn rules.** End each turn with `finish` or `ask_user`.
+
+Dynamic context includes the current flow outline, recent messages, and the latest user message.
+
+The provider receives tool parameters as plain objects. The backend uses Pydantic for validation and returns invalid arguments as tool errors so the loop can continue.
+
+### 7.5 Failure handling and observability
+
+- The SDK retries timed-out or rate-limited LLM calls up to `LLM_MAX_RETRIES` times.
+  - If retries are exhausted in the agent loop before commit, the turn returns `failed` and keeps the current flow.
+  - If retries are exhausted while generating the explanation after commit, the fallback explanation is used and the status and version are preserved (see section 7.1).
+- Unknown tools and invalid arguments return errors to the agent and count toward the step limit.
+- Each turn receives a `trace_id`. The trace records each tool name, an argument summary, validation results, and duration. The backend writes the trace to structured logs and includes it in the response for an expandable frontend view.
+
+## 8. API
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/sessions` | Create a session. |
+| GET | `/api/sessions/{id}` | Get the session's conversation history and current flow. |
+| POST | `/api/sessions/{id}/messages` | Send a message and run one agent turn. |
+| POST | `/api/sessions/{id}/simulations` | Start a simulation of the current flow with optional API mocks. |
+| POST | `/api/simulations/{sim_id}/input` | Send user input to a simulation. |
+
+The message endpoint returns the following fields.
+
+```json
+{
+  "status": "completed | partial | declined | clarification | failed",
+  "reply": "A summary, a clarification question, or the reason the request was declined",
+  "flow": {},
+  "version": 3,
+  "diff": [],
+  "issues": [],
+  "explanation": "Plain-language explanation",
+  "explanation_source": "llm | fallback",
+  "assumptions": [],
+  "unsupported": [],
+  "draft": null,
+  "trace": []
+}
+```
+
+The `flow` field holds the current valid flow. Both `flow` and `version` are `null` until a valid version exists. When a turn creates no new version, `diff` is empty and `explanation` is `null`. Section 4 defines the diff entries. The `issues` array holds validation findings, `trace` records agent steps, and `draft` can be populated on failed turns.
+
+## 9. Frontend
+
+The single-page frontend has three columns.
+
+- The **left column** shows the Copilot conversation, including replies, clarifications, assumptions, and unsupported requests.
+- The **center column** shows a React Flow graph laid out with dagre. Nodes with issues appear in red or yellow, and the current node is highlighted during simulation.
+- The **right column** contains the Explanation and issues, Simulator, and JSON tabs.
+
+## 10. Testing
+
+| Area | Coverage |
+|---|---|
+| `domain` unit tests | Positive and negative cases for each validation rule, atomic edits, and engine behavior including fallback, API failure, step limits, and variable substitution. |
+| Variable analysis | A merge fails validation if only one branch writes a required variable and passes if both write it. Reading a variable left unwritten by `fallback` or `failure` fails validation. Analysis converges on a flow with a cycle. |
+| Option matching | `Buyer` and `buyer` count as duplicates. The inputs `1` and `buyer` both store `"Buyer"` for the first Buyer option. Numeric option text takes precedence over its position. |
+| Diff | A turn that runs only `set_start` increments the version and returns exactly one `target: start` entry, with both values. |
+| Agent loop | A scripted fake LLM covers every row in section 7.3, including first-turn clarification with a null flow, a valid draft at the step limit without `finish`, and `finish` with no edits. It also covers fixing a draft after validation rejects it. |
+| Commit and explanation | The fake LLM succeeds in the agent loop and times out during explanation. The status is `completed`, the version increments exactly once, and `explanation_source` is `fallback`. |
+| Demos | Run three natural-language scenarios manually with a live LLM. |
+
+## 11. Demo scenarios
+
+1. **Buyer and seller routing.** The agent asks for the help article link, builds and explains the flow, and simulates buyer, seller, and unexpected responses.
+2. **Multi-turn edit.** Ask the agent to wait one hour after sending the seller's article and then ask whether it helped. Show the `apply_edits` result and the diff.
+3. **Unknown team and unsupported action.** Ask the agent to route VIP users to the VIP team and send them an email. Show the clarification for the missing team and the email action listed in `unsupported`.
