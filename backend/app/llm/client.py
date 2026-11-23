@@ -77,6 +77,12 @@ class OpenAICompatClient:
             max_retries=settings.llm_max_retries,
         )
 
+    def _extra(self) -> dict[str, Any]:
+        mode = self.settings.llm_thinking.strip().lower()
+        if mode not in {"disabled", "enabled"}:
+            return {}
+        return {"extra_body": {"thinking": {"type": mode}}}
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -94,6 +100,7 @@ class OpenAICompatClient:
             kwargs["tools"] = tools
             if tool_choice:
                 kwargs["tool_choice"] = tool_choice
+        kwargs.update(self._extra())
         try:
             resp = self._client.chat.completions.create(**kwargs)
         except openai.OpenAIError as e:
@@ -126,6 +133,7 @@ class OpenAICompatClient:
                 model=self.settings.llm_model, messages=messages, tools=tools,
                 temperature=self.settings.llm_temperature, stream=True,
                 **({"tool_choice": tool_choice} if tool_choice else {}),
+                **self._extra(),
             ) as stream:
                 for chunk in stream:
                     if chunk.usage:
@@ -171,6 +179,7 @@ class OpenAICompatClient:
                 messages=messages,
                 temperature=self.settings.llm_temperature,
                 stream=True,
+                **self._extra(),
             ) as stream:
                 for chunk in stream:
                     if chunk.usage:

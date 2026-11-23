@@ -12,7 +12,7 @@ From the project root, copy the environment template.
 cp .env.example .env
 ```
 
-Open `.env` and set `LLM_API_KEY` and `LLM_MODEL`. If you use another OpenAI-compatible provider, set `LLM_BASE_URL` to its endpoint.
+Open `.env` and set `LLM_API_KEY`. The template uses official DeepSeek (`deepseek-flash` at `https://api.deepseek.com/v1`). Keep `LLM_THINKING=disabled`: the default thinking mode rejects `tool_choice=required`. For another OpenAI-compatible provider, set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_THINKING`.
 
 With Docker running, start both services from the project root.
 

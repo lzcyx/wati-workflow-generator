@@ -12,13 +12,15 @@ class Settings(BaseSettings):
         env_file=BACKEND_DIR.parent / ".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    llm_base_url: str = "https://api.openai.com/v1"
+    llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
-    llm_model: str = ""
+    llm_model: str = "deepseek-flash"
     llm_temperature: float = 0.2
     llm_timeout_seconds: float = 60
     llm_max_retries: int = 2
     llm_tool_choice: str = "required"
+    # Official DeepSeek defaults to thinking, which rejects tool_choice=required.
+    llm_thinking: str = "disabled"
 
     agent_max_iterations: int = 15
     agent_history_messages: int = Field(default=8, ge=0)
